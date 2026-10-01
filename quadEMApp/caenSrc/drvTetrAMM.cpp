@@ -671,17 +671,41 @@ asynStatus drvTetrAMM::setAveragingTime(epicsFloat64 value)
 asynStatus drvTetrAMM::setBiasState(epicsInt32 value) 
 {
     asynStatus status;
+    bool setBiasComplete = false;
+    double enableTime = 0;
+    const double pollTime = 0.01;
+    static const char *functionName = "setBiasState";
 
     epicsSnprintf(outString_, sizeof(outString_), "STATUS:RESET");
     status = sendCommand();
     epicsSnprintf(outString_, sizeof(outString_), "HVS:%s", value ? "ON" : "OFF");
     status = sendCommand();
-    // If turning the bias on then we also need to send the bias voltage, 
+
+    // If turning the bias on then we also need to send the bias voltage,
     // because it may not have been sent when the bias was off.
     if (value) {
-        double biasVoltage;
-        getDoubleParam(P_BiasVoltage, &biasVoltage);
-        status = setBiasVoltage(biasVoltage);
+        // Wait for the meter's bias module state to be enabled before setting the voltage
+        // otherwise the meter returns an error.
+        while(!setBiasComplete && enableTime < TetrAMM_COMMAND_TIMEOUT){
+            epicsThreadSleep(pollTime);
+            enableTime += pollTime;
+            epicsSnprintf(outString_, sizeof(outString_), "HVS:?");
+            status = writeReadMeter();
+            setBiasComplete = strstr(inString_, "OFF") == 0;
+        }
+
+        if (setBiasComplete) {
+            double biasVoltage;
+            getDoubleParam(P_BiasVoltage, &biasVoltage);
+            status = setBiasVoltage(biasVoltage);
+            asynPrint(pasynUserSelf, ASYN_TRACEIO_DRIVER,
+                "%s::%s: the meter to took %.3lf seconds to enable the bias module\n",
+                driverName, functionName, enableTime);
+        } else {
+            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+            "%s::%s: error, the bias module of the meter was not enabled after %.3lf seconds\n",
+            driverName, functionName, TetrAMM_COMMAND_TIMEOUT);
+        }
     }
     return status;
 }
